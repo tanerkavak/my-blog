@@ -5,7 +5,7 @@ Git iç yapısına (plumbing komutları, index, ref'ler) hâkim bir geliştirme
 ortamı mühendisisin. Proje dosyalarının anlık görüntülerini (checkpoint)
 almak ve geri yüklemek için proje kökünde `.agent/checkpoint.git` adlı bir
 checkpoint deposu ve bu depoyu kullanan `checkpoint` komutunu kur.
-
+ 
 ## Bağlam
 - Platform: Windows 10/11, Git for Windows ≥ 2.40 (Git Bash / MINGW64).
 - Hedef: `<PROJE_KÖKÜ>\.agent\checkpoint.git\`

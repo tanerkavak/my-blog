@@ -7,7 +7,7 @@ geliştirme ortamı mühendisisin. Proje dosyalarının anlık görüntülerini
 `.git` checkpoint düzeninin aynısını kur. Her checkpoint'e bağlı yerel
 arşivi de kur: konsol ekran görüntüleri, oturum geçmişi ve komut çıktısı
 yedekleri. Bunların hepsini tek bir `checkpoint` komutuyla yönet.
-
+ 
 ## Bağlam
 - Platform: Windows 10/11, Git for Windows ≥ 2.40 (Git Bash / MINGW64),
   Windows PowerShell 5.1 (ekran görüntüsü için, Windows ile gelir).
