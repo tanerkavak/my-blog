@@ -1,0 +1,387 @@
+CHECKPOINT PROMPTU — v1 → v2 DEĞİŞİKLİK NOTLARI
+================================================
+Kaynak : checkpoint.md (v1, değiştirilmedi)
+Yeni   : checkpoint_v2.md
+Tarih  : 2026-11-26
+Odak   : Yerel CLI agent'larla (Claude Code, Codex CLI, Gemini CLI, Aider,
+         OpenCode vb.) otomatik, etkileşimsiz ve güvenli kullanım.
+
+
+1. GENEL
+--------
++ Başlığa ve girişe v2 odağı eklendi: agent'ın her düzenlemesinden önce durum
+  kaydı, her turun geri alınabilmesi, agent'ın tek başına yıkıcı işlem
+  yapamaması.
++ Rol tanımına "agent entegrasyonu" uzmanlığı eklendi.
++ Sonuç paragrafı v2 hedefini yansıtacak şekilde güncellendi.
+- Tüm .nextcode ibareleri kaldırıldı (giriş, kesin sınırlar, Bölüm 4,
+  çalışma sırası, sonuç paragrafı). Sistem artık harici bir örneğe atıf
+  yapmadan kendi tasarım ilkeleriyle tanımlanıyor.
+~ Bölüm 4 başlığı: ".nextcode yaklaşımından alınacak fikirler" →
+  "Tasarım ilkeleri".
+
+
+2. PARAMETRELER (Bölüm 1)
+-------------------------
++ [HEDEF_AGENTLAR]        : Adaptör yazılacak agent listesi.
++ [HOOK_HATA_POLITIKASI]  : fail-closed (varsayılan) / fail-open.
++ [HOOK_SURE_BUTCESI_MS]  : Hook başına süre sınırı (varsayılan 1500 ms).
++ Hook'lar her araç çağrısında çalıştığı için düşük başlangıç süreli çalışma
+  zamanı tercih edilmesi notu.
+
+
+3. ÜRÜN TANIMI (Bölüm 2)
+------------------------
++ `aict agent install <agent>` ile adaptör kurulumu adımı.
++ Agent'ın dosya değiştiren araçtan ÖNCE otomatik `pre-edit`, tur sonunda
+  `post-turn` checkpoint'i.
++ `aict undo` kullanım senaryosuna eklendi.
++ Agent'a özgü kısımların yalnız ince adaptör katmanında yaşaması.
++ Aynı projede birden fazla agent çalışırken değişikliklerin oturum/agent
+  bazında izlenebilmesi.
+
+
+4. KESİN SINIRLAR (Bölüm 3)
+---------------------------
++ 12: Agent bağlamında restore / undo / clean --apply / pin --remove insan
+      onayı olmadan uygulanmaz; `--yes` bunu aşamaz.
++ 13: Agent yapılandırma dosyaları (.claude/settings.json, AGENTS.md,
+      CLAUDE.md, GEMINI.md) onaysız değiştirilmez; önizleme zorunlu.
++ 14: Agent hook belgeleri ezberden varsayılmaz; kurulu sürümden doğrulanır,
+      doğrulanamayan adaptör "doğrulanmadı" işaretlenir.
+~ 3: Kapsam dışı tutulacaklara önbellek de eklendi.
+- v1'deki ".nextcode klasörünü değiştirme" sınırı kaldırıldı; maddeler
+  yeniden numaralandı (v2'de toplam 14 madde).
+
+
+5. KLASÖR YAPISI (Bölüm 5)
+--------------------------
++ cache/stat-cache.json : Hızlı artımlı tarama için durum önbelleği.
++ pins.json             : Sabitlenmiş checkpoint'ler ve etiketler.
++ locks/ kayıtlarına agent bilgisi.
++ Doğruluk kaynağı netleştirildi: yalnız checkpoints/ ve objects/.
+  sessions.json ve cache/ silinse de sistem çalışır; pins.json kaybında
+  clean durur.
++ init'in ignore satırını yalnız ÖNERMESİ (dosyayı kendisi değiştirmez).
+
+
+6. config.json (Bölüm 5.1)
+--------------------------
+~ schema_version: 1 → 2
++ Varsayılan dışlama önerileri: node_modules, .venv, venv, __pycache__, dist,
+  build, target, .next, .cache.
++ sensitive + sensitive_policy (metadata-only / store / skip): .env, *.pem,
+  *.key, id_rsa*, *.pfx içerikleri varsayılan olarak SAKLANMAZ.
+  Gerekçe: sık agent checkpoint'i gizli dosyaların düz metin kopyalarını
+  çoğaltır.
++ max_file_bytes varsayılanı null → 50 MB; large_file_policy eklendi.
++ line_endings: "preserve" (CRLF/LF dönüşümü yok, bayt düzeyinde).
++ retention.keep_auto_checkpoints_days (otomatik checkpoint inceltme).
++ agent bloğu: hook_failure_policy, hook_time_budget_ms, coalesce_window_ms,
+  pre_edit_tools, allow_agent_destructive.
++ v1 kurulumlar için `aict migrate --dry-run`; v1 manifestleri yerinde
+  değiştirilmez.
+
+
+7. MANİFEST (Bölüm 5.2)
+-----------------------
+~ schema_version: 1 → 2
++ actor bloğu: kind, agent, agent_version, agent_session_id, turn_id, tool,
+  tool_call_id, target_paths, host, pid.
++ actor'da prompt metni, model çıktısı, araç argüman içeriği, token ve ortam
+  değişkeni değerleri YASAK.
++ Sabit trigger kümesi: manual, pre-edit, post-edit, post-turn, session-start,
+  pre-restore, restore-result, pre-clean, migrate.
++ Dosya kaydında `storage` alanı (object / metadata-only / empty-dir).
++ `skipped` listesi (desteklenmeyen tür vb. atlanan yollar ve sebebi).
++ summary.changed_paths_sample.
++ actor/message/zaman alanlarının root_fingerprint'e dahil edilmemesi.
++ parent_id = aynı oturumdaki önceki checkpoint; isteğe bağlı
+  previous_global_id.
+
+
+8. NESNE DEPOSU (Bölüm 5.3)
+---------------------------
++ İki sürecin aynı nesneyi aynı anda yayınlaması: hedef zaten varsa (hash
+  doğrulandıktan sonra) başarı sayılır.
+
+
+9. YENİ: DURUM ÖNBELLEĞİ (Bölüm 5.4)
+-----------------------------------
++ (size, mtime_ns, ctime_ns, inode/file-id) → sha256 eşlemesi.
++ "Racy" (çok yeni değişmiş) dosyaların önbelleğe güvenilmeden yeniden
+  hash'lenmesi.
++ Önbellek asla doğruluk kaynağı değil; --rehash ve verify --worktree onu yok
+  sayar; bozuksa silinip tam tarama yapılır.
+
+
+10. CLI (Bölüm 6)
+-----------------
+Yeni komutlar:
++ aict log                     : Tüm oturumların birleşik zaman çizelgesi.
++ aict undo [--steps N]        : Son pre-edit'e / N tur geriye kısayol.
++ aict pin / pin --remove      : Sabitleme ve etiket (v1'de pinned vardı ama
+                                 komutu yoktu).
++ aict doctor [--fix-stale]    : Kilit, tmp, önbellek, şema sağlığı.
++ aict migrate                 : Şema yükseltme.
++ aict agent install/uninstall : Önizlemeli adaptör kurulumu.
++ aict agent hook <olay>       : Adaptörlerin çağırdığı giriş noktası.
++ aict schema                  : JSON çıktı şemaları.
+
+Yeni seçenekler:
++ checkpoint: --trigger, --allow-empty (sözleşmeye eklendi), --rehash,
+  --quiet, --json
++ list: --agent, --trigger
++ diff: --stat, --name-only, --max-lines, --json (agent bağlamını şişirmemek
+  için; kesilen çıktı truncated: true)
++ restore: birden fazla --path, --json
++ verify: --worktree
++ init / sessions: --json
+
+Ref sözdizimi:
++ tam id, tekil kısa id, pin etiketi, @last, @last~N,
+  <session-id>:<sequence>, @session. Belirsiz eşleşme hata + aday listesi.
+
++ 6.1 Çıkış kodları tablosu (0–10): kullanım, bulunamadı, bütünlük, güvenlik,
+  çakışma, ONAY GEREKLİ (7), kilit, süre bütçesi, kısmi başarısızlık.
+  (v1'de yalnız "tutarlı sıfırdan farklı" deniyordu.)
++ 6.2 Makine okunur çıktı: {"schema":"aict.<komut>/v2","ok":...} zarfı, sabit
+  error.code dizeleri, stdout yalnız JSON / stderr ilerleme, NO_COLOR ve TTY
+  dışı renk kapalı, --quiet.
++ 6.3 Ortam değişkenleri: AICT_ROOT, AICT_SESSION, AICT_ACTOR, AICT_AGENT,
+  AICT_NONINTERACTIVE; oturum kimliği öncelik sırası.
+
+
+11. CHECKPOINT ALGORİTMASI (Bölüm 7)
+------------------------------------
++ Hassas dosya kurallarının uygulanması.
++ Dışlanan klasörlere hiç inilmemesi (performans).
++ Önbellek eşleşirse hash'in önbellekten alınması (yeni adım 5).
++ Windows'ta kilitli dosya için sınırlı yeniden deneme.
++ Yayın sonrası önbelleğin güncellenmesi.
++ checkpoint_id'nin zamana göre sıralanabilir (ULID benzeri) üretilmesi.
+
+
+12. YENİ: YEREL CLI AGENT ENTEGRASYONU (Bölüm 7A)
+-------------------------------------------------
++ 7A.1 Katman modeli: Agent → Adaptör (aict agent hook) → Agent'tan bağımsız
+  çekirdek. Yeni agent eklemek çekirdeği değiştirmez.
++ 7A.2 Normalize olaylar: session-start, pre-tool, post-tool, turn-end,
+  session-end ve trigger eşlemesi. Bash gibi kabuk araçları varsayılan
+  pre_edit_tools içinde. Coalescing: pencere içinde değişikliksiz ardışık
+  pre-tool olayı yeni checkpoint üretmez. target_paths yalnız ipucu.
++ 7A.3 Adaptör kurulumu: sürüm/destek tespiti, dry-run, mevcut hook'ları
+  koruyarak birleştirme, backups/ yedeği, uninstall yalnız kendi girdisini
+  kaldırır. Örnek Claude Code hooks JSON'u (SessionStart / PreToolUse / Stop).
+  Hook desteği olmayan agent'lar için: talimat dosyası bloğu ve
+  `aict run -- <agent komutu>` sarmalayıcısı.
++ 7A.4 Hook hata/süre politikası: fail-closed / fail-open, süre bütçesi,
+  agent'ı asla askıda bırakmama, kısa ve varsayılan olarak sessiz hook çıktısı.
++ 7A.5 Agent bağlamında yıkıcı işlemler: yalnız dry-run + kod 7 + insanın
+  çalıştıracağı tam komut; allow_agent_destructive yalnız açık yapılandırmayla;
+  okuma komutları agent için serbest.
++ 7A.6 Çoklu agent/oturum: oturum kilidi + proje yazma kilidi; undo'nun başka
+  oturumun değişikliğini çakışma olarak göstermesi; değişikliklerin oturuma
+  göre etiketlenmesi.
+
+
+13. GERİ YÜKLEME (Bölüm 8)
+--------------------------
++ metadata-only dosyaların geri yüklenemez işaretlenmesi.
++ Agent bağlamı/onay politikası değerlendirme adımı.
++ Proje yazma kilidi alma adımı.
++ Güvenlik checkpoint'ine trigger: pre-restore; sonuca trigger: restore-result.
++ Diğer oturum değişikliklerinin de çakışma olarak işaretlenmesi.
++ Bayt düzeyinde geri yükleme ve izin bitlerinin korunması.
++ Windows kilitli hedef dosya davranışı (varsayılan: dur ve geri dön).
++ Kısmi başarısızlıkta çıkış kodu 10.
++ Çıktıda güvenlik checkpoint kimliği ve "bunu geri almak için" komutu.
++ Agent'a "değişen dosyaları yeniden oku" uyarısı (bellekteki içerik
+  geçersiz).
+
+
+14. YOL VE PLATFORM GÜVENLİĞİ (Bölüm 9)
+--------------------------------------
++ Windows ayrılmış adlar (CON, NUL, COM1...), sondaki nokta/boşluk, \\?\ uzun
+  yol.
++ macOS NFD normalizasyon notu.
++ Atlanan özel dosyaların manifest `skipped` listesine yazılması.
++ Agent cwd'si alt klasör olabilir; kökün yukarı doğru aranması.
++ Kilitte agent bilgisi; PID yeniden kullanımına karşı süreç başlangıç zamanı
+  kontrolü.
+
+
+15. SAKLAMA VE TEMİZLİK (Bölüm 10)
+----------------------------------
++ Sabitleme artık `aict pin` komutuyla.
++ Otomatik pre-edit/post-edit checkpoint'lerinin inceltilmesi; oturumun ilk ve
+  son, her post-turn, pre-restore ve restore-result checkpoint'inin korunması.
++ Agent bağlamında clean uygulanamaz.
+
+
+16. HATA VE GÜNLÜK (Bölüm 11)
+-----------------------------
++ Loglarda prompt metni ve ortam değişkeni değeri yasağı.
++ Log alanlarına süre (ms), actor.kind, actor.agent, oturum.
++ Log boyut sınırı / rotate; log yazılamaması ana işlemi bozmaz.
++ Önbelleğin de yeniden kurulabilir olduğu notu.
+
+
+17. TESTLER (Bölüm 12)
+----------------------
+~ 8: "log" çıktısı eklendi.
++ 21 Önbellek / racy dosya / bozuk önbellek
++ 22 Hook stdin JSON → doğru actor ve trigger; bozuk JSON'da güvenli hata
++ 23 Coalescing
++ 24 fail-closed / fail-open, kilit ve süre aşımı
++ 25 Agent bağlamında yıkıcı komutların kod 7 ile reddi; --yes ile aşılamaması
++ 26 İki oturum dönüşümlü değişiklik; undo çakışma gösterimi
++ 27 Hassas dosya içeriğinin nesne deposunda olmadığının bağımsız kanıtı
++ 28 CRLF/LF ve izin bitlerinin bayt bayt korunması
++ 29 Windows'ta kilitli dosya
++ 30 --json çıktılarının şemaya uyması, stdout'ta JSON dışı çıktı olmaması
++ 31 agent install --dry-run / mevcut hook'ları koruma / uninstall
++ 32 10.000 dosyalık projede sıcak önbellekle hook süresi ölçümü
++ 33 v1 şemalı kurulumda migrate --dry-run
++ Gerçek agent'la uçtan uca testin yalnız sentetik kopyada ve onayla yapılması.
+
+
+18. ÇALIŞMA SIRASI (Bölüm 13)
+-----------------------------
+- v1'deki ".nextcode yapısını salt okunur incele" adımı kaldırıldı.
++ Yeni adım 3: hedef agent sürümlerini ve hook sözleşmelerini tespit et.
+~ Adım 4: hook politikası da kullanıcı kararı listesinde.
+~ Faz 2'ye durum önbelleği, Faz 3'e log ve JSON şemaları, Faz 4'e undo,
+  Faz 5'e pin ve doctor eklendi.
++ Faz 6: agent adaptörleri, coalescing, hata/süre politikası, agent bağlamı
+  kısıtları.
++ Gerçek agent yapılandırmasına adaptör yalnız --dry-run onayından sonra
+  kurulur.
+
+
+19. TESLİM RAPORU (Bölüm 14)
+----------------------------
++ Yeni başlık "Agent entegrasyonu": kurulan adaptörler, hook olayları,
+  yapılandırma değişiklikleri, ölçülen hook süreleri, hook'suz agent yöntemi,
+  doğrulanmadı kalan kombinasyonlar.
++ Güvenlik başlığına: agent bağlamı kısıtları, hassas/büyük dosya politikası.
++ Kullanım başlığına: undo.
++ Sınırlar başlığına: metadata-only dosyaların geri yüklenemeyeceği; kabuk
+  komutlarının proje dışı etkilerinin (paket kurulumu, veritabanı, ağ)
+  checkpoint kapsamında olmadığı.
+
+
+20. KABUL ÖLÇÜTLERİ (Bölüm 15)
+------------------------------
++ Agent'a özgü kodun yalnız adaptör katmanında olması
++ Önbelleğin sonucu değiştirmemesi
++ Her dosya değiştiren araç çağrısından önce durumun korunması
++ Gereksiz checkpoint üretilmemesi (coalescing)
++ Hook süre bütçesine uyum, agent'ı askıda bırakmama
++ Agent bağlamında onaysız yıkıcı işlem olmaması
++ Manifest/loglarda prompt, token, hassas içerik olmaması
++ --json şema ve çıkış kodu tutarlılığı
++ Diğer oturum değişikliklerinin de onaysız ezilmemesi
++ Sabitlenmiş checkpoint nesnelerinin korunması
++ Adaptör kurulumunun önizlemeli olması ve mevcut yapılandırmayı koruması
+~ "doğrulanmadı" kapsamına agent da eklendi.
+
+
+KISALTMALAR: + eklendi   ~ değiştirildi   - kaldırıldı
+
+
+================================================
+EK GÜNCELLEME — SOHBET ARŞİVİ (storage/)
+================================================
+Amaç: Agent sohbetlerinin .agent/.checkpoint/storage/ altında yerel olarak
+yedeklenmesi ve her sohbet turunun o turda alınan checkpoint'lere bağlanması.
+
+GİRİŞ VE ÜRÜN TANIMI
++ Girişe sohbet arşivi paragrafı (Bölüm 7B'ye atıf).
++ Bölüm 2'ye 9. senaryo: tur sonu, oturum sonu ve bağlam sıkıştırma öncesi
+  sohbet yedeği; aict chat komutları.
+
+PARAMETRELER
++ [SOHBET_ARSIVI]   : açık (varsayılan)
++ [SOHBET_MASKELEME]: mask (varsayılan) / none
+
+KESİN SINIRLAR
++ 15: Agent'ın kendi transcript dosyaları değiştirilmez/taşınmaz/silinmez;
+      yalnız okunarak kopyalanır. Sohbet içeriği yalnız storage/ altında;
+      manifest, log ve hook çıktısına yazılmaz.
++ 16: Arşiv proje dışına kopyalanmaz, paylaşılmaz, başka agent'ın bağlamına
+      kendiliğinden yüklenmez.
+
+KLASÖR YAPISI
++ storage/index.json (türetilebilir)
++ storage/objects/<hash[:2]>/<hash> (transcript parçaları; proje nesne
+  deposundan ayrı)
++ storage/chats/<agent>/<agent-session-id>/session.json, snapshots/<n>.json,
+  normalized.jsonl (türetilebilir)
++ Sohbet arşivinin doğruluk kaynağı tanımlandı.
+
+config.json
++ chat_archive bloğu: enabled, storage_dir, agents, events (turn-end,
+  session-end, pre-compact), redaction, redact_patterns, keep_normalized,
+  max_transcript_bytes, failure_policy (fail-open), retention.
++ init arşivin açık olduğunu bildirip bir kez onay ister; onay yoksa
+  enabled: false. storage_dir durum klasörü dışına çıkamaz.
+
+MANİFEST
++ chat_ref alanı: agent, agent_session_id, snapshot, turn_index.
+  Yalnız kimlik içerir, fingerprint'e dahil değildir, arşiv kapalıysa yazılmaz.
+
+CLI
++ aict chat list / show [--turn] [--raw] / search / for <checkpoint-ref> /
+  export --format md|jsonl|raw --out / import / verify / reindex
++ <chat-ref> sözdizimi: <agent>:<oturum>, kısa kimlik, @chat-last,
+  <agent>:<oturum>@<snapshot>
++ clean --chats seçeneği.
+
+AGENT ENTEGRASYONU (7A)
++ Yeni normalize olay: pre-compact (yalnız sohbet arşivi).
++ session-end artık sohbet arşivini de tetikler; turn-end checkpoint'ten
+  sonra arşivler.
++ Claude Code örneğine PreCompact ve SessionEnd hook'ları eklendi.
+
+YENİ BÖLÜM 7B — SOHBET ARŞİVİ
++ 7B.1 Amaç/kapsam: agent'ın kendi transcript dosyası okunarak kopyalanır;
+  ekran/terminal/ağ yakalanmaz; arşiv restore/undo kapsamında değildir.
++ 7B.2 Kaynak bulma: hook JSON'undaki transcript yolu > sürümden doğrulanan
+  oturum klasörü > chat import / aict run. Doğrulanamazsa
+  CHAT_SOURCE_UNVERIFIED.
++ 7B.3 Okuma tutarlılığı: kaynak kilitlenmez/yazılmaz; JSONL'de son tam
+  satıra kadar okunur; yeniden yazılan kaynakta tam kopya + rewritten: true.
++ 7B.4 Artımlı, içerik adresli saklama: önek doğrulamasıyla yalnız yeni bayt
+  aralığı yeni parça olarak saklanır.
++ 7B.5 Snapshot kaydı ve checkpoint ↔ sohbet iki yönlü bağlantısı.
++ 7B.6 Maskeleme: API anahtarı, Bearer token, bulut anahtarı, özel anahtar
+  blokları, bağlantı dizesi parolaları, sensitive dosya değerleri
+  «REDACTED:<tür>» ile değiştirilir; maskeleme garanti değildir.
++ 7B.7 Normalize görünüm (agent'tan bağımsız normalized.jsonl), türetilebilir.
++ 7B.8 Hata/gizlilik/erişim: fail-open, hook süre bütçesine dahil, yalnız
+  kullanıcıya açık dosya izinleri, bulut eşitlemesi/paylaşım uyarısı, agent
+  bağlamında export/silme onay ister.
++ 7B.9 Saklama: ayrı politika, yalnız clean --chats; pin'li checkpoint'e
+  bağlı oturum korunur; parça zinciri ortadan kesilmez.
+
+GERİ YÜKLEME / TEMİZLİK / LOG
++ restore storage/'a dokunmaz.
++ clean varsayılan olarak sohbetlere dokunmaz; checkpoint silinince bağlı
+  sohbet kendiliğinden silinmez.
++ Loglarda sohbet içeriği ve maskelenen değer yasağı.
+
+TESTLER
++ 34–45: bayt bayt export, artımlı parçalar, yazılmakta olan transcript,
+  yeniden yazılan kaynak, maskeleme kanıtı, chat for / verify, kaynağın
+  değişmediğinin hash kanıtı, restore sonrası storage değişmezliği, arşiv
+  hatasında fail-open, clean --chats ve pin koruması, dosya izinleri,
+  storage_dir dışarı kaçış reddi.
+
+ÇALIŞMA SIRASI / RAPOR / KABUL
++ Adım 3'e transcript konum/biçim tespiti (gerçek transcript yalnız salt okunur,
+  testlerde sentetik).
++ Faz 7: sohbet arşivi.
++ Teslim raporuna "Sohbet arşivi" başlığı.
++ 8 yeni kabul ölçütü.
++ Sonuç paragrafına sohbetlerin korunması eklendi.
