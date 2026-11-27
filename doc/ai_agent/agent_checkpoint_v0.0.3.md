@@ -1,4 +1,4 @@
-# AI Bağımsız Checkpoint Sistemi v2 — Yerel CLI Agent'lar İçin Kurulum ve Geliştirme Promptu
+# AI Bağımsız Checkpoint Sistemi v3 (v0.0.3) — Yerel CLI Agent'lar İçin Kurulum ve Geliştirme Promptu
 
 Aşağıdaki promptu, projede yerel bir checkpoint ve geri alma sistemi kurmasını
 istediğin herhangi bir AI kodlama asistanına verebilirsin. Sistem **proje
@@ -6,7 +6,7 @@ içinde ayrı durum klasörü, oturum bazlı kayıtlar ve paylaşılan içerik
 nesneleri** fikrine dayanır; ancak Git veya başka bir sürüm kontrol sistemi
 kullanmaz.
 
-v2'nin odağı: sistemin yalnız insanlar tarafından değil, **yerel CLI agent'lar
+v2'den gelen odak: sistemin yalnız insanlar tarafından değil, **yerel CLI agent'lar
 (Claude Code, Codex CLI, Gemini CLI, Aider, OpenCode vb.) tarafından otomatik,
 etkileşimsiz ve güvenli** biçimde kullanılabilmesidir. Agent'ın her dosya
 değişikliğinden önce durum kaydedilir, her agent turu geri alınabilir ve agent
@@ -19,6 +19,34 @@ alınan checkpoint'lere bağlar. Böylece "bu dosya değişikliğini hangi konu�
 
 Bu dosya çalıştırılabilir bir betik değil, ayrıntılı bir üretim promptudur.
 Köşeli parantezli alanları kullanmadan önce doldur.
+
+## v0.0.3 değişiklikleri (performans denetimi sonrası)
+
+v0.0.2'nin sıcak yolu (tarama + stat cache + SHA-256 + nesne deposu + tam
+manifest) yalnız standart kütüphaneyle Python 3.14 üzerinde prototiplenip
+sentetik projelerde ölçüldü (Windows 11, i5-13500H, 16 GB, NTFS, Defender
+açık). Ölçülen değerler Bölüm 7C'dedir. Bulgular ve yapılan değişiklikler:
+
+1. **Soğuk ilk checkpoint hook bütçesine sığmıyor.** 10.000 dosyada 3–194 sn,
+   50.000 dosyada ~18 dk ölçüldü. `fail-closed` ile birleşince agent hiç
+   düzenleme yapamaz hâle gelebiliyordu. → Taban checkpoint `init`'e taşındı,
+   soğuk durumda hook davranışı ve kaldığı yerden devam eden tarama
+   tanımlandı (5.4, 7, 7A.4).
+2. **Her checkpoint tam manifest yazınca disk hızla doluyor.** Dosya başına
+   ~210 bayt: 10.000 dosyada checkpoint başına 2,1 MB, 50.000 dosyada 10,6 MB.
+   → Manifest, klasör bazlı içerik adresli ağaç nesnelerine bölündü; değişmeyen
+   klasörler checkpoint'ler arasında paylaşılıyor (5.2, 5.5).
+3. **Stat cache her hook'ta baştan okunup yazılıyor.** 50.000 dosyada okuma
+   ~58 ms, yazma ~120 ms (8,4 MB). → Değişiklik yoksa yazılmıyor, parçalı
+   biçim tanımlandı (5.4).
+4. **"Değişmedi" kontrolü önceki manifesti okuyor.** 50.000 dosyada ~90 ms.
+   → Son kök özeti `sessions.json` içindeki küçük `head` kaydından okunuyor (7).
+5. **Nesne başına `fsync` maliyeti yüksek.** Windows'ta ilk checkpoint süresini
+   ~2 katına çıkardı. → Dayanıklılık politikası (`durability`) eklendi (5.3).
+6. **Antivirüs taraması soğuk süreyi ~6 kat değiştiriyor.** Aynı 1.000
+   dosyada 20 sn ile 3,4 sn arası ölçüldü. → `doctor` bunu raporluyor ve
+   dışlama ayarına kendisi dokunmuyor (7C).
+7. Test senaryoları 46–52 ve yeni kabul ölçütleri eklendi.
 
 ---
 
@@ -147,15 +175,16 @@ Sistem kurulduğunda `[DURUM_KLASORU]` altında aşağıdaki yapıyı oluştur:
 ```text
 .agent/.checkpoint/
 ├── config.json                 # Şema ve kullanıcı yapılandırması
-├── sessions.json               # Oturum kayıtları ve son sıra bilgileri (türetilebilir)
+├── sessions.json               # Oturum kayıtları, son sıra ve head (root_tree) bilgisi (türetilebilir)
 ├── checkpoints/
 │   └── <session-id>/
-│       └── <sequence>.json     # Tam, bağımsız okunabilir checkpoint manifesti
+│       └── <sequence>.json     # Küçük, bağımsız okunabilir checkpoint manifesti (kök ağaca bağlanır)
 ├── objects/
 │   └── <hash[:2]>/
-│       └── <hash>              # Dosya içeriği; adı SHA-256 özetidir
+│       └── <hash>              # Dosya içeriği veya klasör ağaç nesnesi; adı SHA-256 özetidir
 ├── cache/
-│   └── stat-cache.json         # yol → (boyut, mtime_ns, inode/file-id, sha256); yalnız hızlandırıcı
+│   ├── stat-cache/             # Parçalı: <üst-klasör-özeti>.json → yol → (boyut, mtime_ns, ctime_ns, file-id, sha256)
+│   └── scan-progress.json      # Yarım kalan soğuk taramanın ilerlemesi (yalnız hızlandırıcı)
 ├── pins.json                   # Sabitlenmiş checkpoint kimlikleri ve etiketler
 ├── backups/
 │   └── <operation-id>/         # Başarısız işlemde dönüş için geçici güvenlik verisi
@@ -198,7 +227,7 @@ En az şu alanları sürümlü biçimde tut:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "project_root": ".",
   "object_hash": "sha256",
   "exclude": [
@@ -212,6 +241,10 @@ En az şu alanları sürümlü biçimde tut:
   "max_file_bytes": 52428800,
   "large_file_policy": "metadata-only",
   "line_endings": "preserve",
+  "durability": {
+    "manual": "strict",
+    "auto": "balanced"
+  },
   "retention": {
     "max_checkpoints_per_session": null,
     "max_age_days": null,
@@ -261,6 +294,9 @@ En az şu alanları sürümlü biçimde tut:
   aşmamalıdır.
 - `line_endings: "preserve"`: CRLF/LF dönüştürmesi yapılmaz; bayt düzeyinde
   saklanır ve geri yüklenir.
+- `durability`: Hangi checkpoint türünde ne kadar `fsync` yapılacağı (Bölüm
+  5.3). `manual` insan komutları içindir, `auto` hook kaynaklı checkpoint'ler
+  içindir.
 - `agent.*` alanları Bölüm 7A'da açıklanır.
 - `chat_archive.*` alanları Bölüm 7B'de açıklanır. `init`, arşivin açık
   olduğunu ve sohbetlerde gizli bilgi bulunabileceğini **bir kez açıkça
@@ -268,8 +304,8 @@ En az şu alanları sürümlü biçimde tut:
   `storage_dir` durum klasörünün içinde kalmalıdır; dışarıyı gösteren yol
   reddedilir.
 
-Şema sürümü 1 olan bir kurulum bulunursa `aict migrate --dry-run` ile neyin
-değişeceğini göster; v1 manifestleri yerinde değiştirilmez, okunabilir kalır.
+Şema sürümü 1 veya 2 olan bir kurulum bulunursa `aict migrate --dry-run` ile neyin
+değişeceğini göster; eski manifestler (v2 tam `files` listeli manifestler dahil) yerinde değiştirilmez, okunabilir kalır.
 
 ## 5.2 Checkpoint manifesti
 
@@ -277,7 +313,7 @@ Her checkpoint tek başına okunabilir bir JSON belgesi olmalıdır:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "checkpoint_id": "<benzersiz-id>",
   "session_id": "<oturum-id>",
   "sequence": 1,
@@ -303,17 +339,10 @@ Her checkpoint tek başına okunabilir bir JSON belgesi olmalıdır:
     "snapshot": 7,
     "turn_index": 12
   },
-  "root_fingerprint": "<kanonik dosya listesinin SHA-256 özeti>",
-  "files": [
-    {
-      "path": "src/ornek.py",
-      "type": "file",
-      "sha256": "<içerik-özeti>",
-      "size": 1234,
-      "mode": 420,
-      "mtime_ns": 0,
-      "storage": "object"
-    }
+  "root_tree": "<kök klasör ağaç nesnesinin SHA-256 özeti>",
+  "root_fingerprint": "<root_tree ile aynı değer; geriye uyumluluk için>",
+  "changed": [
+    { "path": "src/ornek.py", "change": "modified" }
   ],
   "skipped": [
     { "path": "logs/app.sock", "reason": "unsupported-type" }
@@ -340,9 +369,16 @@ büyük dosya; içerik yok), `empty-dir`.
 Kurallar:
 
 - Yollar UTF-8, göreli ve `/` ayraçlı kanonik biçimde saklanır.
-- Manifest dosya listesi yola göre kanonik sıralanır; aynı ağaç aynı
-  `root_fingerprint` değerini üretir. `actor`, `message` ve zaman alanları
-  fingerprint'e dahil edilmez.
+- Dosya listesi manifestte değil, Bölüm 5.5'teki **ağaç nesnelerinde**
+  durur. Manifest yalnız `root_tree`'yi gösterir. Manifest, ebeveyn
+  checkpoint olmadan, yalnız nesne deposuyla tam okunabilir; bu "bağımsız
+  okunabilirlik" kuralını korur. `aict show` ağacı açarak tam dosya listesini
+  gösterir.
+- Aynı ağaç aynı `root_tree` değerini üretir. `actor`, `message` ve zaman
+  alanları ağaç özetine dahil edilmez.
+- `changed` yalnız ebeveyne göre değişen yolların özetidir ve hızlı `list` /
+  `log` içindir. Doğruluk kaynağı ağaçtır; `changed` en fazla 1.000 yol tutar,
+  fazlası `changed_truncated: true` ile işaretlenir.
 - Dosya içeriği manifeste gömülmez; `sha256` ile nesneye bağlanır.
 - Boş dosyalar ve destekleniyorsa boş klasörler açıkça temsil edilir.
 - Dosya silme, önceki manifestin kapsamıyla karşılaştırılarak anlaşılır;
@@ -364,7 +400,23 @@ Kurallar:
 
 - Nesne adı içeriğin SHA-256 özetidir; Git nesne biçimi kullanılmaz.
 - Nesne önce `tmp/<operation-id>/` altına yazılır, flush/close tamamlanır,
-  boyut ve hash doğrulanır, sonra atomik olarak hedef ada taşınır.
+  boyut ve hash doğrulanır, sonra atomik olarak hedef ada taşınır. İşlem
+  başına tek bir `tmp/<operation-id>/` klasörü açılır (nesne başına klasör
+  açılmaz) ve işlem sonunda boşsa silinir.
+- Kopyalama sırasında hash, kaynaktan okunurken hesaplanır. Dosya bir kez
+  okunur; hash için ayrı bir okuma yapılmaz.
+- **Dayanıklılık (`durability`):**
+  - `strict`: Her nesne ve manifest `fsync` edilir, ardından hedef klasör
+    `fsync` edilir (destekleyen platformlarda).
+  - `balanced`: Nesneler `fsync` edilmeden yayınlanır. Manifest yayınlanmadan
+    **önce** bu checkpoint'te yeni yazılan nesneler toplu olarak `fsync`
+    edilir (hepsi yazıldıktan sonra tek geçişte), ardından manifest `fsync`
+    edilir. Böylece çökme sonrası manifest, diske inmemiş bir nesneyi asla
+    göstermez.
+  - Ölçüm: Windows/NTFS'te nesne başına `fsync`, soğuk checkpoint süresini
+    ~2 katına çıkarıyor (Bölüm 7C). Hangi politikanın seçileceği ölçümle
+    belirlenir; `balanced` hiçbir koşulda manifestten önce gelen nesne
+    `fsync`'ini atlamaz.
 - Aynı hash'e sahip geçerli nesne varsa yeniden yazılmaz.
 - Sıfır baytlık içerik de geçerli nesnedir.
 - Nesneler varsayılan olarak değişmez kabul edilir; mevcut nesnenin üzerine
@@ -380,8 +432,22 @@ Kurallar:
 Agent'lar dakikada onlarca checkpoint isteyebilir; her seferinde bütün projeyi
 yeniden hash'lemek kabul edilemez.
 
-- `cache/stat-cache.json` her yol için `(size, mtime_ns, ctime_ns, inode veya
+- `cache/stat-cache/` her yol için `(size, mtime_ns, ctime_ns, inode veya
   Windows file-id)` → `sha256` eşlemesi tutar.
+- Önbellek **parçalıdır** (ör. birinci seviye klasöre göre). Yalnız içinde
+  değişiklik olan parçalar yeniden yazılır. Hiçbir giriş değişmediyse
+  önbelleğe hiç yazılmaz. Tek dosyalık JSON önbellek 50.000 dosyada 8,4 MB'a
+  ulaştı ve her hook'ta ~180 ms okuma+yazma maliyeti getirdi (Bölüm 7C).
+  Dil standart kütüphanesinde gömülü bir veritabanı varsa (ör. Python
+  `sqlite3`) parçalı JSON yerine o da kullanılabilir. Gerekçe raporda
+  belirtilir.
+- **Kaldığı yerden devam eden soğuk tarama:** İlk tarama veya önbelleği
+  silinmiş tarama uzun sürer (50.000 dosyada dakikalar). Tarama sırasında
+  önbellek parçaları ve `scan-progress.json` belirli aralıklarla (ör. her
+  2.000 dosyada veya 1 saniyede) atomik olarak kaydedilir. Süre bütçesi
+  dolduğunda veya işlem kesildiğinde yapılan iş kaybolmaz: bir sonraki
+  deneme yayınlanmış nesneleri ve önbelleği yeniden kullanır. Yarım tarama
+  **hiçbir zaman** checkpoint olarak yayınlanmaz.
 - Bu dört değer aynıysa hash yeniden hesaplanmaz; biri farklıysa dosya yeniden
   okunur.
 - mtime çözünürlüğü kaba olan dosya sistemlerinde, son `N` saniye içinde
@@ -390,6 +456,40 @@ yeniden hash'lemek kabul edilemez.
   ve `aict verify --worktree` önbelleği yok sayar.
 - Önbellek atomik yazılır; bozuksa sessizce silinir ve tam tarama yapılır,
   bu durum loglanır.
+
+## 5.5 Ağaç nesneleri
+
+Her checkpoint için bütün dosya listesini yeniden yazmak ölçekte kabul
+edilemez. Ölçülen değer dosya başına ~210 bayt: 50.000 dosyada checkpoint
+başına 10,6 MB eder. Bu yüzden dosya listesi klasör bazlı ağaç nesnelerine
+bölünür:
+
+```json
+{
+  "schema": "aict.tree/1",
+  "entries": [
+    { "name": "ornek.py", "type": "file", "sha256": "<içerik>", "size": 1234,
+      "mode": 420, "mtime_ns": 0, "storage": "object" },
+    { "name": "alt", "type": "dir", "tree": "<alt ağaç özeti>" }
+  ]
+}
+```
+
+- Ağaç nesnesi kanonik JSON'dur (UTF-8, sıralı anahtarlar, `name`e göre
+  bayt sıralı girdiler, boşluksuz). Adı, bu baytların SHA-256 özetidir ve
+  dosya içerikleriyle aynı `objects/` deposunda saklanır.
+- Bir klasörde değişiklik yoksa onun ağaç nesnesi (ve bütün alt ağacı)
+  değişmez ve yeniden yazılmaz. Tek dosyalık bir düzenleme yalnız o dosyadan
+  köke giden yol üzerindeki ağaçları yeniden yazar (klasör derinliği kadar
+  küçük nesne).
+- Boş klasör, girdisi olmayan ağaçtır. `metadata-only` ve `skipped` bilgisi
+  girdinin kendisinde durur.
+- Bu yapı, içerik adresli Merkle ağacı fikrinin genel bir uygulamasıdır.
+  Biçimi kendi JSON şemasıdır; Git tree/commit nesne biçimi kullanılmaz
+  (Bölüm 3.2).
+- `verify` ağacı kökten yaprağa dolaşır. Eksik veya hash'i tutmayan ağaç
+  nesnesi, eksik içerik nesnesiyle aynı şekilde bütünlük hatasıdır (kod `4`).
+- `clean` erişilebilirlik hesabına ağaç nesnelerini de dahil eder.
 
 # 6. Komut satırı sözleşmesi
 
@@ -442,9 +542,14 @@ Her komut için:
 
 - `init`: Yapıyı oluşturur; mevcut geçerli kurulumu bozmaz. Farklı şema veya
   bozuk yapılandırma varsa üzerine yazmaz. Önerilen dışlama ve hassas dosya
-  listesini gösterir.
-- `checkpoint`: Tam ağaç manifesti üretir; önbellek sayesinde yalnız değişen
-  dosyaları hash'ler ve değişmeyen nesneleri yeniden yazmaz. İçerik değişmediyse
+  listesini gösterir. Onaydan sonra **taban checkpoint'i** (`trigger:
+  session-start`, oturum `init`) hook süre bütçesi olmadan alır. Dosya
+  sayısını ve ilerlemeyi stderr'e yazar, Ctrl+C ile kesilirse kaldığı yerden
+  devam eder (5.4). Bu adım atlanırsa ilk hook soğuk tarama yapmak zorunda
+  kalır (7A.4).
+- `checkpoint`: Tam ağacı ağaç nesneleriyle temsil eder (5.5). Önbellek
+  sayesinde yalnız değişen dosyaları hash'ler, yalnız değişen klasörlerin ağaç
+  nesnelerini yazar ve değişmeyen nesneleri yeniden yazmaz. İçerik değişmediyse
   varsayılan olarak yeni checkpoint üretmez ve mevcut checkpoint kimliğini
   `unchanged: true` ile bildirir. Bilinçli boş checkpoint için `--allow-empty`.
 - `list`: Zaman/sıra düzeninde checkpoint özetlerini gösterir; agent, tetikleyici
@@ -551,14 +656,24 @@ oturum kimliği > süreç ağacından türetilen kararlı kimlik > yeni kimlik.
    görüntü üretme ve açık hata ver. Windows'ta başka süreç tarafından kilitli
    dosya için kısa, sınırlı yeniden deneme yap; sonra açık hata ver.
 7. İçeriğin SHA-256 özetini akış hâlinde hesapla; büyük dosyaları gereksiz
-   yere belleğe alma.
+   yere belleğe alma. Yeni içerik için hash'i kopyalama sırasında hesapla
+   (tek okuma).
 8. Yeni nesneleri geçici alana yaz, doğrula ve atomik yayınla.
-9. Tam manifesti geçici dosyaya yaz ve JSON/şema doğrulaması yap.
-10. Oturum sırasını kilit altında ayır. Aynı oturumda sıra çakışmasını önle.
-11. Manifesti hedef ada atomik taşı; ardından oturum özetini ve önbelleği
-    güncelle.
-12. Manifest yayınlanmadan checkpoint başarılı sayılmaz. Hata olursa geçici
+9. Klasör ağaç nesnelerini aşağıdan yukarı üret (5.5). Değişmeyen klasörün
+   önceki ağaç özetini yeniden kullan.
+10. **Değişmedi kontrolü:** Yeni `root_tree`'yi `sessions.json` içindeki
+    oturum/proje `head` kaydıyla karşılaştır; önceki manifesti dosyadan
+    okuma. Head kaydı yoksa veya bozuksa manifestten yeniden kur. Aynıysa
+    `unchanged: true` dön; manifest ve önbellek yazma.
+11. Küçük manifesti geçici dosyaya yaz ve JSON/şema doğrulaması yap.
+12. Oturum sırasını kilit altında ayır. Aynı oturumda sıra çakışmasını önle.
+13. `durability` politikasına göre `fsync` yap (5.3). Manifesti hedef ada
+    atomik taşı, ardından `head` kaydını ve yalnız değişen önbellek
+    parçalarını güncelle.
+14. Manifest yayınlanmadan checkpoint başarılı sayılmaz. Hata olursa geçici
     dosyaları temizle; daha önce yayınlanmış checkpoint'lere dokunma.
+    Yayınlanmış nesneler ve önbellek ilerlemesi korunur; sonraki deneme
+    bunları yeniden kullanır.
 
 Sıra kimliği yalnız oturum içinde monoton olur. Farklı oturumlar aynı sayıyı
 kullanabilir; gerçek benzersiz kimlik `checkpoint_id` alanıdır. Kısa kimlikle
@@ -654,6 +769,21 @@ Hook desteği olmayan agent'lar için iki yedek yol sun:
   olay `operations.jsonl`'e `CHECKPOINT_SKIPPED` olarak düşer.
 - Hook hiçbir koşulda agent'ı askıda bırakmaz: kilit beklemesi ve tarama
   `hook_time_budget_ms` ile sınırlıdır.
+- **Soğuk başlangıç (taban checkpoint yok veya önbellek boş):** Soğuk tarama
+  bütçeye sığmaz (10.000 dosyada saniyeler ile dakikalar arası ölçüldü).
+  `fail-closed` burada agent'ı süresiz kilitleyebilir. Bu yüzden:
+  - `session-start` hook'u taban checkpoint yoksa soğuk taramayı başlatır ve
+    bütçe bitince ilerlemeyi kaydedip çıkar (5.4). Bu olay agent'ı engellemez.
+  - Soğuk durumdaki `pre-tool` hook'u, `fail-closed` politikasında düzenlemeyi
+    engeller. Yine de ilerlemeyi kaydeder, böylece sonraki denemeler hızlanır.
+    Tek satırlık mesajı eyleme dönüktür: `aict: taban checkpoint yok;
+    terminalde "aict init" veya "aict checkpoint" çalıştırın (N/M dosya
+    hazır)`.
+  - Kod `9` (`BUDGET_EXCEEDED`) ve `cold: true`, `progress: {done, total}`
+    JSON alanları döner.
+  - Projenin belirli bir boyutun üstünde olması (Bölüm 7C eşikleri) bunun
+    dışındadır. Önbellek sıcakken bile bütçe aşılıyorsa `doctor` ve `init`
+    bunu ölçülmüş süreyle bildirir ve dışlama listesini genişletmeyi önerir.
 - Hook çıktısı agent bağlamına girer; tek satır ve kısa olmalı. Başarılı
   `pre-tool` hook'u varsayılan olarak hiçbir şey yazmaz.
 
@@ -827,6 +957,66 @@ Her arşiv olayı `snapshots/<sequence>.json` üretir:
 - Bir oturumun parçaları yalnız oturumun tamamı silinirken silinir; zincirin
   ortasından parça silinmez.
 
+# 7C. Performans hedefleri ve referans ölçümler
+
+## 7C.1 Referans ölçüm (v0.0.2 tasarımının prototipi)
+
+Ortam: Windows 11 Pro, Intel i5-13500H, 16 GB RAM, NTFS SSD, Windows
+Defender gerçek zamanlı koruma açık, Python 3.14 (yalnız stdlib). Sentetik
+projede dosyaların medyan boyutu ~3 KB'tır (log-normal dağılım) ve ayrıca
+dışlanan 5.000 dosyalık bir `node_modules` vardır. Değerler, süreç başlatma
+dahil duvar saati süreleridir (5 tekrar).
+
+| Senaryo | 1.000 dosya | 10.000 dosya | 50.000 dosya |
+|---|---|---|---|
+| Python başlatma (`json`, `hashlib`, `os`) | 34 ms | 34 ms | 34 ms |
+| Soğuk ilk checkpoint | 3,4–20 sn* | 194 sn | 1.098 sn (~18 dk) |
+| Sıcak, değişiklik yok | 98–138 ms | 180–207 ms | 620–657 ms |
+| Sıcak, tek dosya düzenlendi | 138–162 ms | 226–247 ms | 728–776 ms |
+| Tarama (`scandir`) | ~45 ms | ~55 ms | ~250 ms |
+| Stat cache okuma + yazma (tek JSON) | ~27 ms | ~47 ms | ~178 ms |
+| Önceki manifesti okuma | 3–15 ms | 19–39 ms | 89–107 ms |
+| Checkpoint başına tam manifest | 0,2 MB | 2,1 MB | 10,6 MB |
+| Stat cache boyutu | 0,17 MB | 1,7 MB | 8,4 MB |
+
+\* Aynı 1.000 dosyalık proje: dosyalar yeni oluşturulmuşken (antivirüs
+taraması sürüyorken) 20 sn, sonradan 3,4 sn ölçüldü. Nesne başına `fsync`
+kapatıldığında aynı soğuk checkpoint 1,7 sn sürdü.
+
+Sonuçlar:
+
+- Sıcak yol 50.000 dosyaya kadar 1.500 ms bütçenin içinde kalıyor. Asıl
+  maliyet, değişmeyen veri üzerinde yapılan tam yazma/okumalardır (manifest,
+  önbellek). 5.4, 5.5 ve 7 numaralı adımlardaki değişiklikler bunları
+  kaldırır. Tahmini kazanç 50.000 dosyada ~300 ms; uygulama bunu ölçerek
+  raporlar.
+- Soğuk yolun maliyetini dosya başına oluşturma, `fsync` ve antivirüs
+  belirler; bayt hızı belirleyici değildir. Bu iş hook içinde yapılamaz.
+- Disk: v0.0.2 tasarımıyla 50.000 dosyalık projede günde 100 otomatik
+  checkpoint, yalnız manifestler için ~1 GB/gün eder. Ağaç nesneleriyle bu,
+  değişen klasör sayısıyla orantılı hâle gelir.
+
+## 7C.2 Hedefler (uygulama ölçüp raporlar, uydurmaz)
+
+| Ölçüt | Hedef |
+|---|---|
+| Sıcak `pre-tool`, değişiklik yok, 10.000 dosya | ≤ 300 ms (p95) |
+| Sıcak `pre-tool`, değişiklik yok, 50.000 dosya | ≤ 800 ms (p95) |
+| Tek dosya düzenlemesinde yeni yazılan meta veri | ≤ (klasör derinliği + 1) nesne, ≤ 64 KB |
+| Değişiklik yokken diske yazılan bayt | 0 (log satırı hariç) |
+| Bellek (50.000 dosya, sıcak) | ≤ 200 MB RSS |
+| Soğuk checkpoint | Bütçe yok; ilerleme gösterilir, kesilince devam eder |
+
+- Hedef karşılanmıyorsa raporda ölçülen değer ve darboğaz aşaması
+  (tarama / önbellek / hash / yazma) yazılır. Hedef sessizce gevşetilmez.
+- 100.000 dosyanın üstündeki projelerde sıcak tarama bile bütçeyi
+  zorlayabilir. Bu durumda `init` ölçülmüş süreyi gösterir ve dışlama
+  önerir. Dosya sistemi izleyicisi (watcher) veya arka plan servisi
+  eklenmesi kapsam dışıdır; ancak kullanıcı kararı olarak raporlanır.
+- `doctor`, soğuk checkpoint ölçümü anormal derecede yavaşsa (ör. dosya başına
+  > 5 ms) antivirüs gerçek zamanlı taramasının olası etkisini bildirir.
+  Antivirüs veya dışlama ayarlarını **kendisi değiştirmez**.
+
 # 8. Geri yükleme algoritması
 
 Geri yükleme sistemin en hassas işlemidir:
@@ -985,8 +1175,8 @@ v2 ile eklenen agent senaryoları:
 32. Hook süresi: orta boy sentetik projede (ör. 10.000 dosya) önbellek sıcakken
     `pre-tool` checkpoint süresinin ölçülüp `[HOOK_SURE_BUTCESI_MS]` ile
     karşılaştırılması (ölçülen değer raporlanır, uydurulmaz)
-33. v1 şemalı sentetik kurulumda `migrate --dry-run`ın hiçbir şeyi
-    değiştirmemesi ve v1 manifestlerinin okunabilir kalması
+33. v1 ve v2 şemalı sentetik kurulumlarda `migrate --dry-run`ın hiçbir şeyi
+    değiştirmemesi ve eski manifestlerin okunabilir kalması
 
 Sohbet arşivi senaryoları:
 
@@ -1015,6 +1205,26 @@ Sohbet arşivi senaryoları:
 45. `storage_dir`'in durum klasörü dışını göstermesi hâlinde yapılandırmanın
     reddedilmesi
 
+v0.0.3 performans senaryoları:
+
+46. 1.000 / 10.000 / 50.000 dosyalık sentetik projelerde Bölüm 7C.1 tablosunun
+    yeniden ölçülmesi. Sıcak p50/p95, soğuk süre ve aşama kırılımı raporlanır.
+47. Tek dosya düzenlemesinden sonra yalnız kökten o dosyaya giden ağaç
+    nesnelerinin yeni yazıldığının, `objects/` öncesi/sonrası listesi
+    karşılaştırılarak bağımsız kanıtlanması
+48. Değişiklik olmayan sıcak checkpoint'te durum klasörüne hiçbir dosyanın
+    yazılmadığının (mtime ve boyut karşılaştırmasıyla) doğrulanması
+49. Soğuk taramanın bütçe dolunca kesilmesi, ardından devam etmesi ve sonunda
+    kesintisiz taramayla **aynı** `root_tree`'yi üretmesi. Yarım taramanın
+    checkpoint olarak yayınlanmadığının doğrulanması.
+50. Soğuk durumda `fail-closed` `pre-tool` hook'unun kod `9` ve eyleme dönük
+    mesaj vermesi; `session-start`'ın agent'ı engellememesi
+51. `balanced` dayanıklılıkta, manifest yayınlanmadan hemen önce süreç
+    öldürüldüğünde (sentetik kesinti) manifestin yayınlanmadığının ve
+    `verify`'ın temiz çıktığının doğrulanması
+52. v2 tam manifestli sentetik kurulumun v3 ağaç biçimiyle okunabilmesi ve
+    aynı ağaç için aynı dosya listesini vermesi
+
 Test, yalnız uyguladığın kodun ürettiği değeri tekrar etmemeli. Geri yükleme
 sonrası dosyaları beklenen bağımsız içerikle karşılaştır; manifestteki hash'i
 tek başına yeterli kanıt sayma. Gerçek agent'larla uçtan uca test yapılacaksa
@@ -1034,7 +1244,7 @@ sentetik proje kopyasında ve kullanıcı onayıyla yap.
 6. Uygulama modu açıksa önce sentetik test fixture'ını kur.
 7. Şu kontrollü fazlarla ilerle:
    - Faz 1: `init`, yapılandırma, tarama ve güvenli yol kontrolü
-   - Faz 2: nesne deposu, manifest, durum önbelleği ve `checkpoint`
+   - Faz 2: nesne deposu, ağaç nesneleri, manifest, parçalı durum önbelleği, kaldığı yerden devam eden tarama ve `checkpoint` (7C ölçümleriyle)
    - Faz 3: `list`, `log`, `status`, `show`, `diff`, `verify`, JSON şemaları
    - Faz 4: güvenlik checkpoint'li `restore` ve `undo`
    - Faz 5: oturum eşzamanlılığı, `pin`, `clean`, `doctor`
@@ -1112,6 +1322,13 @@ Rapor şu başlıklarla ve kısa, doğrulanabilir bilgilerle olsun:
       (veya `fail-open` ile atlandığı loglanıyor).
 - [ ] Ardışık değişikliksiz hook olayları gereksiz checkpoint üretmiyor.
 - [ ] Hook'lar süre bütçesine uyuyor ve agent'ı askıda bırakmıyor.
+- [ ] Taban checkpoint `init` ile hook dışında alınıyor. Soğuk tarama kesilse
+      de ilerleme kaybolmuyor ve yarım tarama checkpoint olarak yayınlanmıyor.
+- [ ] Değişiklik olmayan checkpoint durum klasörüne hiçbir şey yazmıyor.
+- [ ] Tek dosya değişikliği yalnız değişen yol üzerindeki ağaç nesnelerini
+      yazıyor; checkpoint başına meta veri dosya sayısıyla doğrusal büyümüyor.
+- [ ] Bölüm 7C.2 hedefleri ölçüldü; karşılanmayanlar ölçülen değer ve
+      darboğazla raporlandı.
 - [ ] Agent bağlamında yıkıcı işlemler insan onayı olmadan uygulanmıyor.
 - [ ] Manifest ve loglarda prompt, model çıktısı, token veya hassas dosya
       içeriği yok; hassas dosya içerikleri varsayılan olarak saklanmıyor.

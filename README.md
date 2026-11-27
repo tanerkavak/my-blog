@@ -4,7 +4,7 @@ Burada çalışma dosyalarım yer almaktadır.
 
 - git add .
 - git commit -m "Açıklama ekle."
-- git push origin main
+- git push origin main/ofis_calisma
 
 
 
